@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"os"
 	"path/filepath"
@@ -31,7 +32,34 @@ func resizeImage(img image.Image, maxWidth int) image.Image {
 	return dst
 }
 
-func compressJPEG(input, output string, quality, maxWidth int) error {
+// removeReflection は暗いピクセル（輝度が threshold 以下）を純黒に置き換える
+// 画面の黒い背景に写り込んだ反射を除去する
+func removeReflection(img image.Image, threshold uint8) *image.RGBA {
+	bounds := img.Bounds()
+	dst := image.NewRGBA(bounds)
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			r8 := uint8(r >> 8)
+			g8 := uint8(g >> 8)
+			b8 := uint8(b >> 8)
+
+			// 輝度を計算 (ITU-R BT.601)
+			luma := 0.299*float64(r8) + 0.587*float64(g8) + 0.114*float64(b8)
+
+			if luma <= float64(threshold) {
+				dst.Set(x, y, color.Black)
+			} else {
+				dst.Set(x, y, color.RGBA{r8, g8, b8, uint8(a >> 8)})
+			}
+		}
+	}
+
+	return dst
+}
+
+func compressJPEG(input, output string, quality, maxWidth int, reflectionThreshold uint8) error {
 	inFile, err := os.Open(input)
 	if err != nil {
 		return fmt.Errorf("open error: %w", err)
@@ -46,6 +74,9 @@ func compressJPEG(input, output string, quality, maxWidth int) error {
 	// リサイズ
 	img = resizeImage(img, maxWidth)
 
+	// 反射除去
+	processed := removeReflection(img, reflectionThreshold)
+
 	outFile, err := os.Create(output)
 	if err != nil {
 		return fmt.Errorf("create error: %w", err)
@@ -53,7 +84,7 @@ func compressJPEG(input, output string, quality, maxWidth int) error {
 	defer outFile.Close()
 
 	opts := &jpeg.Options{Quality: quality}
-	if err := jpeg.Encode(outFile, img, opts); err != nil {
+	if err := jpeg.Encode(outFile, processed, opts); err != nil {
 		return fmt.Errorf("encode error: %w", err)
 	}
 
@@ -65,9 +96,15 @@ func main() {
 	outDir := filepath.Join("data", "compressed")
 	quality := 70
 	maxWidth := 1920
+	// 反射除去の閾値（0-255）: この値以下の輝度のピクセルを純黒にする
+	// 値を上げるほど強く除去するが、波形のデータも消える可能性あり
+	var reflectionThreshold uint8 = 80
 
 	var totalIn, totalOut int64
 	count := 0
+
+	fmt.Printf("Settings: quality=%d, maxWidth=%dpx, reflection threshold=%d\n\n",
+		quality, maxWidth, reflectionThreshold)
 
 	// data/original/ 以下を再帰的に走査
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
@@ -92,9 +129,9 @@ func main() {
 			return fmt.Errorf("mkdir error: %w", err)
 		}
 
-		fmt.Printf("Compressing: %s ... ", relPath)
+		fmt.Printf("Processing: %s ... ", relPath)
 
-		if err := compressJPEG(path, outputPath, quality, maxWidth); err != nil {
+		if err := compressJPEG(path, outputPath, quality, maxWidth, reflectionThreshold); err != nil {
 			fmt.Printf("FAILED: %v\n", err)
 			return nil
 		}
@@ -122,7 +159,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("\n%d files compressed (quality=%d, maxWidth=%dpx)\n", count, quality, maxWidth)
+	fmt.Printf("\n%d files processed\n", count)
 	fmt.Printf("Total: %.1f MB → %.1f MB (%.1f MB 削減, %.0f%%)\n",
 		float64(totalIn)/1024/1024,
 		float64(totalOut)/1024/1024,
