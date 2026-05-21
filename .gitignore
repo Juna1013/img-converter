@@ -1,8 +1,8 @@
 # macOS
 .DS_Store
 
-# 圧縮済み画像（再生成可能）
-data/compressed/
+# 元画像（サイズが大きいため除外）
+data/original/
 
 # Go binary
 img-converter
